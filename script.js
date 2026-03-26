@@ -89,6 +89,7 @@ const els = {
   spendingChart: document.querySelector("#spendingChart"),
   spendingLegend: document.querySelector("#spendingLegend"),
   cashflowTrendChart: document.querySelector("#cashflowTrendChart"),
+  trendChartTooltip: document.querySelector("#trendChartTooltip"),
   forecastBody: document.querySelector("#forecastBody"),
   incomeTemplate: document.querySelector("#incomeTemplate"),
   expenseTemplate: document.querySelector("#expenseTemplate"),
@@ -105,6 +106,7 @@ function init() {
   wireTopLevelInputs();
   wireAddButtons();
   wirePersistenceButtons();
+  wireTrendChartTooltip();
   startAutosave();
   renderAll();
 }
@@ -343,6 +345,7 @@ function renderForecast() {
 
   const totalExpenses = annual.fixed + annual.discretionary + annual.oneOff;
   const yearNet = annual.income - totalExpenses;
+  const averageMonthlyFlexFund = (annual.income - annual.fixed) / 12;
   const finalBalance = state.startingBalance + yearNet;
   const tightest = months.reduce((lowest, month) => (month.lowestBalance < lowest.lowestBalance ? month : lowest), months[0]);
 
@@ -354,16 +357,22 @@ function renderForecast() {
       tone: "",
     },
     {
-      label: "Projected year-end balance",
-      value: formatCurrency(finalBalance),
-      note: "Starting cash plus annual net",
-      tone: finalBalance >= 0 ? "positive" : "negative",
-    },
-    {
       label: "Tightest month",
       value: tightest.month,
       note: formatCurrency(tightest.lowestBalance),
       tone: tightest.lowestBalance >= 0 ? "" : "negative",
+    },
+    {
+      label: "Average monthly flex fund",
+      value: formatCurrency(averageMonthlyFlexFund),
+      note: "Income minus fixed costs, divided by 12",
+      tone: averageMonthlyFlexFund >= 0 ? "positive" : "negative",
+    },
+    {
+      label: "Average monthly surplus",
+      value: formatCurrency(yearNet / 12),
+      note: "Helpful for buffer planning",
+      tone: yearNet >= 0 ? "positive" : "negative",
     },
     {
       label: "Annual income",
@@ -384,10 +393,10 @@ function renderForecast() {
       tone: yearNet >= 0 ? "positive" : "negative",
     },
     {
-      label: "Average monthly surplus",
-      value: formatCurrency(yearNet / 12),
-      note: "Helpful for buffer planning",
-      tone: yearNet >= 0 ? "positive" : "negative",
+      label: "Projected year-end balance",
+      value: formatCurrency(finalBalance),
+      note: "Starting cash plus annual net",
+      tone: finalBalance >= 0 ? "positive" : "negative",
     },
   ]);
   renderSpendingChart(spendingByCategory);
@@ -879,6 +888,7 @@ function renderSpendingChart(entries) {
 
 function renderCashflowTrendChart(months) {
   const svg = els.cashflowTrendChart;
+  hideTrendChartTooltip();
   const width = 980;
   const height = 360;
   const margin = { top: 20, right: 28, bottom: 56, left: 66 };
@@ -944,6 +954,33 @@ function renderCashflowTrendChart(months) {
     })
     .join("");
 
+  const hitAreas = months
+    .map((month, index) => {
+      const x = margin.left + slotWidth * index;
+      const payload = escapeHtml(
+        JSON.stringify({
+          month: month.month,
+          net: month.net,
+          endingBalance: month.endingBalance,
+        }),
+      );
+      return `
+        <rect
+          class="trend-chart-hit"
+          x="${x}"
+          y="${margin.top}"
+          width="${slotWidth}"
+          height="${chartHeight}"
+          fill="transparent"
+          tabindex="0"
+          role="button"
+          aria-label="${escapeHtml(`${month.month}: net cashflow ${formatCurrency(month.net)}, ending balance ${formatCurrency(month.endingBalance)}`)}"
+          data-tooltip="${payload}"
+        ></rect>
+      `;
+    })
+    .join("");
+
   svg.innerHTML = `
     <rect x="0" y="0" width="${width}" height="${height}" rx="18" fill="transparent"></rect>
     ${gridLines}
@@ -952,6 +989,7 @@ function renderCashflowTrendChart(months) {
     <polyline fill="none" stroke="#2563eb" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" points="${linePoints}"></polyline>
     ${pointDots}
     ${labels}
+    ${hitAreas}
     <g transform="translate(${margin.left + 12}, 18)">
       <rect x="0" y="0" width="190" height="52" rx="14" fill="rgba(255,255,255,0.92)" stroke="rgba(31,36,48,0.10)"></rect>
       <rect x="14" y="14" width="14" height="14" fill="#0f766e" opacity="0.82"></rect>
@@ -963,11 +1001,78 @@ function renderCashflowTrendChart(months) {
   `;
 }
 
+function wireTrendChartTooltip() {
+  const svg = els.cashflowTrendChart;
+
+  svg.addEventListener("pointermove", (event) => {
+    const target = event.target.closest("[data-tooltip]");
+    if (!target) {
+      hideTrendChartTooltip();
+      return;
+    }
+    showTrendChartTooltip(target, event.clientX, event.clientY);
+  });
+
+  svg.addEventListener("pointerleave", () => {
+    hideTrendChartTooltip();
+  });
+
+  svg.addEventListener("focusin", (event) => {
+    const target = event.target.closest("[data-tooltip]");
+    if (!target) {
+      return;
+    }
+    const rect = target.getBoundingClientRect();
+    showTrendChartTooltip(target, rect.left + rect.width / 2, rect.top);
+  });
+
+  svg.addEventListener("focusout", (event) => {
+    if (svg.contains(event.relatedTarget)) {
+      return;
+    }
+    hideTrendChartTooltip();
+  });
+}
+
+function showTrendChartTooltip(target, clientX, clientY) {
+  const tooltip = els.trendChartTooltip;
+  const panel = tooltip.parentElement;
+  const payload = target.dataset.tooltip;
+  if (!payload || !panel) {
+    return;
+  }
+
+  const data = JSON.parse(payload);
+  tooltip.innerHTML = `
+    <strong>${escapeHtml(data.month)}</strong>
+    <span>Net cashflow: ${escapeHtml(formatCurrency(data.net))}</span>
+    <span>Ending balance: ${escapeHtml(formatCurrency(data.endingBalance))}</span>
+  `;
+  tooltip.classList.remove("is-hidden");
+  tooltip.setAttribute("aria-hidden", "false");
+
+  const panelRect = panel.getBoundingClientRect();
+  const tooltipWidth = tooltip.offsetWidth || 184;
+  const xPadding = tooltipWidth / 2 + 12;
+  const x = Math.min(Math.max(clientX - panelRect.left, xPadding), panelRect.width - xPadding);
+  const y = Math.max(clientY - panelRect.top, 28);
+
+  tooltip.style.left = `${x}px`;
+  tooltip.style.top = `${y}px`;
+}
+
+function hideTrendChartTooltip() {
+  els.trendChartTooltip.classList.add("is-hidden");
+  els.trendChartTooltip.setAttribute("aria-hidden", "true");
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function buildNiceAxis(minValue, maxValue, tickCount) {
