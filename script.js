@@ -799,7 +799,12 @@ function compareEvents(a, b) {
 }
 
 function sortItemsByDate(items, field) {
-  items.sort((a, b) => compareDateValues(a[field], b[field]) || a.name.localeCompare(b.name));
+  items.sort(
+    (a, b) =>
+      compareDateValues(a[field], b[field]) ||
+      (Number(b.amount) || 0) - (Number(a.amount) || 0) ||
+      a.name.localeCompare(b.name),
+  );
 }
 
 function compareDateValues(a, b) {
